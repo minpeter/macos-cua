@@ -1,0 +1,74 @@
+{
+  "name": "cua",
+  "kind": "sidecar",
+  "version": "0.1.0",
+  "description": "macOS computer-use actions backed by the macos-cua CLI",
+  "ops": ["cua.screenshot", "cua.cursor_position", "cua.screen_size", "cua.click", "cua.type"],
+  "effects": {
+    "cua.screenshot": "read",
+    "cua.cursor_position": "read",
+    "cua.screen_size": "read",
+    "cua.click": "mutate",
+    "cua.type": "mutate"
+  },
+  "schemas": {
+    "cua.screenshot": {
+      "input": {
+        "type": "object",
+        "required": ["target"],
+        "properties": { "target": { "type": "string", "enum": ["window", "screen"] } }
+      },
+      "output": {
+        "type": "object",
+        "required": ["mimeType", "dataBase64", "byteLength", "width", "height"]
+      }
+    },
+    "cua.cursor_position": {
+      "input": { "type": "object" },
+      "output": {
+        "type": "object",
+        "required": ["pointerScreen", "pointerWindow", "defaultCoordinateSpace"]
+      }
+    },
+    "cua.screen_size": {
+      "input": { "type": "object" },
+      "output": { "type": "object", "required": ["actionSpace"] }
+    },
+    "cua.click": {
+      "input": {
+        "type": "object",
+        "required": ["x", "y"],
+        "properties": { "x": { "type": "integer" }, "y": { "type": "integer" } }
+      },
+      "output": {
+        "type": "object",
+        "required": ["accepted", "pointerScreen", "inputUnits"]
+      }
+    },
+    "cua.type": {
+      "input": {
+        "type": "object",
+        "required": ["text"],
+        "properties": { "text": { "type": "string" } }
+      },
+      "output": {
+        "type": "object",
+        "required": ["accepted", "pointerScreen", "inputUnits"]
+      }
+    }
+  },
+  "sidecar": {
+    "executable": "/Users/min-ung-gi/.bun/bin/macos-cua",
+    "args": ["--json"],
+    "protocol": "cli",
+    "timeoutMs": 20000,
+    "commands": {
+      "cua.screenshot": { "args": ["screenshot", "{output}", "{target}"], "output": "png_base64" },
+      "cua.cursor_position": { "args": ["cursor-position"], "output": "json" },
+      "cua.screen_size": { "args": ["screen-size"], "output": "json" },
+      "cua.click": { "args": ["click", "{x}", "{y}"], "output": "json" },
+      "cua.type": { "args": ["type", "{text}"], "output": "json" }
+    }
+  },
+  "sandbox": { "grant": "full_access" }
+}

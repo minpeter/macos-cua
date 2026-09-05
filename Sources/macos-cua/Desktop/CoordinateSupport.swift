@@ -89,6 +89,7 @@ struct CoordinateContext {
             try CoordinateSupport.validateRelativePoint(raw)
         }
         let local = isRelative ? CoordinateSupport.denormalize(raw, resolution: resolution) : raw
+        try CoordinateSupport.validatePoint(local, resolution: resolution)
         return ResolvedActionPoint(local: local, screen: resolution.translate(point: local))
     }
 
@@ -288,6 +289,15 @@ enum CoordinateSupport {
     static func validateRelativePoint(_ point: CGPoint) throws {
         try validateRelativeValue(Int(point.x.rounded()), name: "x")
         try validateRelativeValue(Int(point.y.rounded()), name: "y")
+    }
+
+    fileprivate static func validatePoint(_ point: CGPoint, resolution: CoordinateResolution) throws {
+        let size = referenceSize(for: resolution)
+        guard point.x >= 0, point.y >= 0, point.x < size.width, point.y < size.height else {
+            throw CUAError(
+                message: "coordinate is outside the \(resolution.coordinateSpace.rawValue): x=\(Int(point.x)), y=\(Int(point.y))"
+            )
+        }
     }
 
     static func validateRelativeRect(_ rect: CGRect) throws {

@@ -3,13 +3,22 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
-enum ScreenshotTarget {
+enum ScreenshotTarget: Equatable {
     case frontmostWindow
     case screen
     case region(CGRect)
 }
 
 enum ScreenshotSupport {
+    static func target(named name: String) throws -> ScreenshotTarget {
+        switch name {
+        case "window": return .frontmostWindow
+        case "screen": return .screen
+        default:
+            throw CUAError(message: "invalid screenshot target: \(name); expected window or screen")
+        }
+    }
+
     static func screenCaptureAccess() -> Bool {
         PermissionSupport.isGranted(.screenRecording)
     }
