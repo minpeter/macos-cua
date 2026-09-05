@@ -5,11 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/timzhong1024/macos-cua.git"
+    "url": "git+https://github.com/minpeter/macos-cua.git"
   },
-  "homepage": "https://github.com/timzhong1024/macos-cua#readme",
+  "homepage": "https://github.com/minpeter/macos-cua#readme",
   "bugs": {
-    "url": "https://github.com/timzhong1024/macos-cua/issues"
+    "url": "https://github.com/minpeter/macos-cua/issues"
   },
   "bin": {
     "macos-cua": "bin/macos-cua"

@@ -60,4 +60,4 @@ macos-cua click 120 73 --precise && macos-cua type "Slack" && macos-cua keypress
 ```
 
 For full documentation, see the upstream project README:
-[github.com/timzhong1024/macos-cua](https://github.com/timzhong1024/macos-cua#readme)
+[github.com/minpeter/macos-cua](https://github.com/minpeter/macos-cua#readme)
