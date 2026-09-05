@@ -99,13 +99,18 @@ swift run macos-cua move 800 400 --precise
 swift run macos-cua click 800 400 --fast
 ```
 
-5. Use screen-global coordinates only when needed:
+5. Use primary-screen coordinates only when needed:
 
 ```bash
 swift run macos-cua screenshot --screen /tmp/screen.png
 swift run macos-cua move 800 400 --screen --precise
 swift run macos-cua click 800 400 --screen --fast
 ```
+
+Coordinates are macOS logical points, not Retina backing pixels. Screenshots
+are normalized to these action units. Without a usable frontmost window,
+window-first commands fall back to the primary screen. `pointerScreen` and
+window bounds remain screen-global; see the [coordinate model](docs/coordinate-model.md).
 
 ## Context Helpers
 
@@ -124,6 +129,18 @@ swift run macos-cua clipboard set "https://example.com"
 swift run macos-cua open-url https://example.com
 swift run macos-cua app activate Safari
 swift run macos-cua window list
+```
+
+Use a freshly listed native window ID for exact activation. IDs can be null
+when macOS cannot associate an Accessibility window with a unique native
+window; a title alone is not an identity. Activation can fail and returns a
+nonzero exit status rather than claiming success.
+
+Text accepts at most 8192 UTF-16 units. Use `--` before literal text that looks
+like an option:
+
+```bash
+swift run macos-cua type -- "--fast"
 ```
 
 ## Agent Sequencing
