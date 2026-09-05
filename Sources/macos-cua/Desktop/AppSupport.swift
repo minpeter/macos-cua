@@ -57,7 +57,11 @@ enum AppSupport {
             .sorted { lhs, rhs in
                 let lhsName = lhs.localizedName ?? ""
                 let rhsName = rhs.localizedName ?? ""
-                return lhsName.localizedCaseInsensitiveCompare(rhsName) == .orderedAscending
+                if lhsName.lowercased() != rhsName.lowercased() {
+                    return lhsName.lowercased() < rhsName.lowercased()
+                }
+                if lhsName != rhsName { return lhsName < rhsName }
+                return lhs.processIdentifier < rhs.processIdentifier
             }
     }
 
@@ -121,30 +125,76 @@ enum AppSupport {
         throw CUAError(message: "timed out after \(timeoutMs / 1000)s waiting to \(action) app: \(query)")
     }
 
+    // The notification observer is installed before the action, and the run loop waits
+    // for state changes rather than treating an accepted activation request as success.
+    final class ActivationConfirmation: NSObject {
+        let verify: () -> Bool
+        let runLoop = CFRunLoopGetCurrent()
+        private(set) var confirmed = false
+
+        init(verify: @escaping () -> Bool) {
+            self.verify = verify
+        }
+
+        @objc func notified(_ notification: Notification) {
+            check()
+        }
+
+        func check() {
+            if verify() {
+                confirmed = true
+                CFRunLoopStop(runLoop)
+            }
+        }
+
+        func wait(timeout: TimeInterval) -> Bool {
+            check()
+            let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
+            while !confirmed {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { break }
+                let result = CFRunLoopRunInMode(.defaultMode, remaining, false)
+                if result == .finished || result == .timedOut { break }
+            }
+            return confirmed && verify()
+        }
+    }
+
+    static func confirmActivation(
+        timeout: TimeInterval = 2,
+        subscribe: (ActivationConfirmation) throws -> () -> Void,
+        action: () throws -> Void,
+        verify: @escaping () -> Bool
+    ) rethrows -> Bool {
+        let observation = ActivationConfirmation(verify: verify)
+        let cleanup = try subscribe(observation)
+        defer { cleanup() }
+        try action()
+        return observation.wait(timeout: timeout)
+    }
+
     static func activateApplication(_ app: NSRunningApplication) -> Bool {
-        app.unhide()
-        let direct = app.activate()
-        if app.isActive || frontmostApplication()?.processIdentifier == app.processIdentifier {
-            return true
-        }
-        if let bundleID = app.bundleIdentifier,
-           runAppleScript(["tell application id \"\(bundleID)\" to activate"]) {
-            usleep(250_000)
-        } else if let name = app.localizedName,
-                  runAppleScript(["tell application \"\(name.replacingOccurrences(of: "\"", with: "\\\""))\" to activate"]) {
-            usleep(250_000)
-        } else {
-            usleep(250_000)
-        }
-        return direct || app.isActive || frontmostApplication()?.processIdentifier == app.processIdentifier
+        confirmActivation(subscribe: { observation in
+            let center = NSWorkspace.shared.notificationCenter
+            center.addObserver(observation, selector: #selector(ActivationConfirmation.notified(_:)),
+                               name: NSWorkspace.didActivateApplicationNotification, object: nil)
+            return { center.removeObserver(observation) }
+        }, action: {
+            app.unhide()
+            _ = app.activate()
+        }, verify: {
+            !app.isTerminated && frontmostApplication()?.processIdentifier == app.processIdentifier
+        })
     }
 
     @discardableResult
     static func activate(query: String) throws -> [String: Any] {
         if let app = findRunningApplication(matching: query) {
-            let ok = activateApplication(app)
+            guard activateApplication(app) else {
+                throw CUAError(message: "failed to confirm activated app: \(query)")
+            }
             return [
-                "ok": ok,
+                "ok": true,
                 "launched": false,
                 "app": record(for: app).json,
             ]
@@ -152,8 +202,11 @@ enum AppSupport {
 
         try openApplication(query: query, activate: true)
         let app = try requireRunningApplication(matching: query, action: "launch")
+        guard activateApplication(app) else {
+            throw CUAError(message: "failed to confirm activated app: \(query)")
+        }
         return [
-            "ok": activateApplication(app),
+            "ok": true,
             "launched": true,
             "app": record(for: app).json,
         ]

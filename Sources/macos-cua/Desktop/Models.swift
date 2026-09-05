@@ -41,10 +41,25 @@ struct WindowRecord {
     let layer: Int
     let onScreen: Bool
     let isFrontmost: Bool
+    // CG-only discovery cannot determine whether an offscreen window is minimized.
+    let isMinimized: Bool?
+
+    init(id: Int?, pid: Int32, appName: String, title: String, bounds: CGRect,
+         layer: Int, onScreen: Bool, isFrontmost: Bool, isMinimized: Bool? = nil) {
+        self.id = id
+        self.pid = pid
+        self.appName = appName
+        self.title = title
+        self.bounds = bounds
+        self.layer = layer
+        self.onScreen = onScreen
+        self.isFrontmost = isFrontmost
+        self.isMinimized = isMinimized
+    }
 
     var json: [String: Any] {
         [
-            "id": id as Any,
+            "id": id.map { $0 as Any } ?? NSNull(),
             "pid": Int(pid),
             "appName": appName,
             "title": title,
@@ -52,6 +67,7 @@ struct WindowRecord {
             "layer": layer,
             "onScreen": onScreen,
             "frontmost": isFrontmost,
+            "minimized": isMinimized.map { $0 as Any } ?? NSNull(),
         ]
     }
 
