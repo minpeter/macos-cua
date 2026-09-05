@@ -42,6 +42,20 @@ final class CoordinateSupportTests: XCTestCase {
         XCTAssertEqual(translated.screen.y, 203, accuracy: 0.0001)
     }
 
+    func testWindowPointRejectsNegativeCoordinates() {
+        let window = makeWindow(bounds: CGRect(x: 300, y: 180, width: 640, height: 480))
+        let context = CoordinateSupport.context(explicitScreen: false, relative: false, frontmostWindow: window)
+
+        XCTAssertThrowsError(try context.inputPoint(x: -1, y: 0))
+    }
+
+    func testWindowPointRejectsCoordinatesOutsideWindow() {
+        let window = makeWindow(bounds: CGRect(x: 300, y: 180, width: 640, height: 480))
+        let context = CoordinateSupport.context(explicitScreen: false, relative: false, frontmostWindow: window)
+
+        XCTAssertThrowsError(try context.inputPoint(x: 640, y: 480))
+    }
+
     func testLocalPointerSubtractsWindowOrigin() {
         let window = makeWindow(bounds: CGRect(x: 220, y: 140, width: 900, height: 700))
         let context = CoordinateSupport.context(explicitScreen: false, relative: false, frontmostWindow: window)

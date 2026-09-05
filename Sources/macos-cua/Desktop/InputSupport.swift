@@ -99,9 +99,10 @@ enum InputSupport {
     static func actionSpace() throws -> [String: Any] {
         let screen = try requireValue(NSScreen.main, "no main screen is available")
         return [
+            "x": 0,
+            "y": 0,
             "width": Int(screen.frame.width.rounded()),
             "height": Int(screen.frame.height.rounded()),
-            "scale": screen.backingScaleFactor,
         ]
     }
 
@@ -261,6 +262,21 @@ enum InputSupport {
     }
 
     static func typeText(_ text: String, fast: Bool) throws {
+        guard text.utf16.count <= 8_192 else {
+            throw CUAError(message: "typed text must contain at most 8192 UTF-16 units")
+        }
+        if text.isEmpty {
+            return
+        }
+        if requiresClipboardPaste(text) {
+            let previous = try ClipboardSupport.getText()
+            defer { try? ClipboardSupport.setText(previous) }
+            try ClipboardSupport.setText(text)
+            try keypress("cmd+v")
+            usleep(100_000)
+            return
+        }
+
         func delayMicros(for character: Character) -> UInt32 {
             if fast {
                 if character == " " || character == "\n" || character == "\t" {
@@ -294,5 +310,9 @@ enum InputSupport {
             try post(up)
             usleep(delayMicros(for: character))
         }
+    }
+
+    static func requiresClipboardPaste(_ text: String) -> Bool {
+        !text.unicodeScalars.allSatisfy(\.isASCII)
     }
 }

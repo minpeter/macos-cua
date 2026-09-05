@@ -10,8 +10,10 @@ enum CLI {
       doctor
       onboard [--wait|--no-wait] [--timeout <seconds>] [--no-request] [--no-open]
       state
+      cursor-position
+      screen-size
       open-url <url>
-      screenshot [--screen] [--region x y w h] <path.png>
+      screenshot [--screen] [--region x y w h] <path.png> [window|screen]
       move <x> <y> [--screen] [--fast|--precise]
       mousedown <x> <y> [left|right|middle] [--screen] [--fast|--precise]
       mouseup [left|right|middle]
@@ -76,6 +78,10 @@ enum CLI {
                 try doctor(output: output)
             case "state":
                 try state(output: output, relative: relative)
+            case "cursor-position":
+                try cursorPosition(output: output)
+            case "screen-size":
+                try screenSize(output: output)
             case "open-url":
                 try openURL(args: Array(args.dropFirst()), output: output)
             case "screenshot":
@@ -265,6 +271,22 @@ enum CLI {
         )
     }
 
+    static func cursorPosition(output: CLIOutput) throws {
+        let pointerScreen = InputSupport.currentPointer()
+        let context = CoordinateSupport.context(explicitScreen: false, relative: false)
+        try output.emit([
+            "pointerScreen": CoordinateSupport.pointJSON(pointerScreen),
+            "pointerWindow": context.pointerWindowPoint(fromScreenPoint: pointerScreen)
+                .map(CoordinateSupport.pointJSON) as Any,
+            "defaultCoordinateSpace": context.coordinateSpaceName,
+        ])
+    }
+
+    static func screenSize(output: CLIOutput) throws {
+        let actionSpace = try InputSupport.actionSpace()
+        try output.emit(["actionSpace": actionSpace])
+    }
+
     static func openURL(args: [String], output: CLIOutput) throws {
         guard args.count == 1 else {
             throw CUAError(message: "usage: macos-cua open-url <url>")
@@ -291,27 +313,28 @@ enum CLI {
     }
 
     static func screenshot(args: [String], output: CLIOutput, relative: Bool) throws {
-        guard !args.isEmpty else {
-            throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
-        }
         let options = try parseScreenshotOptions(args)
-        guard options.remaining.count == 1 else {
-            throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
+        guard (1...2).contains(options.remaining.count) else {
+            throw CUAError(
+                message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png> [window|screen]"
+            )
         }
-        let coordinateContext = CoordinateSupport.context(explicitScreen: options.explicitScreen, relative: relative)
+        let requestedTarget = try options.remaining.dropFirst().first.map(ScreenshotSupport.target(named:))
+        if options.region != nil, requestedTarget != nil {
+            throw CUAError(message: "--region cannot be combined with a positional screenshot target")
+        }
         let target: ScreenshotTarget
-        let reportedBounds: CGRect?
         if let region = options.region {
-            let actionRect = try coordinateContext.inputRect(region)
-            target = .region(actionRect.screen)
-            reportedBounds = coordinateContext.outputRect(fromLocalRect: actionRect.local)
-        } else if coordinateContext.usesWindowCoordinates {
-            target = .frontmostWindow
-            reportedBounds = coordinateContext.screenshotReportedBounds(for: target)
+            let screenContext = CoordinateSupport.context(explicitScreen: true, relative: relative)
+            target = .region(try screenContext.inputRect(region).screen)
+        } else if let requestedTarget {
+            target = requestedTarget
         } else {
-            target = .screen
-            reportedBounds = coordinateContext.screenshotReportedBounds(for: target)
+            target = options.explicitScreen ? .screen : .frontmostWindow
         }
+        let explicitScreen = options.explicitScreen || requestedTarget == .screen || options.region != nil
+        let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
+        let reportedBounds = coordinateContext.screenshotReportedBounds(for: target)
         var payload = try ScreenshotSupport.capture(
             target: target,
             path: options.remaining[0],
@@ -321,6 +344,8 @@ enum CLI {
         )
         coordinateContext.applyMetadata(to: &payload)
         let image = payload["image"] as? [String: Any]
+        payload["width"] = image?["width"]
+        payload["height"] = image?["height"]
         let bounds = payload["bounds"] as? [String: Any]
         let human = "captured \(payload["target"] as? String ?? "screenshot") to \(options.remaining[0]) (\(image?["width"] ?? "?")x\(image?["height"] ?? "?"), \(coordinateContext.summary), bounds \(bounds?["x"] ?? "?"),\(bounds?["y"] ?? "?") \(bounds?["width"] ?? "?")x\(bounds?["height"] ?? "?"))"
         try output.emit(payload, human: human)
@@ -401,16 +426,13 @@ enum CLI {
         let coordinateContext = CoordinateSupport.context(explicitScreen: explicitScreen, relative: relative)
         let actionPoint = try coordinateContext.inputPoint(x: x, y: y)
         try InputSupport.click(point: actionPoint.screen, button: button, count: 1, profile: profile)
-        var payload = coordinateContext.actionPayload(x: x, y: y, screenPoint: actionPoint.screen)
-        payload["button"] = button.rawValue
-        payload["count"] = 1
-        payload["profile"] = profile.rawValue
-        if let feedback = AccessibilitySupport.feedback(for: actionPoint.screen, context: coordinateContext) {
-            for (key, value) in feedback {
-                payload[key] = value
-            }
-        }
+        let payload: [String: Any] = [
+            "accepted": true,
+            "pointerScreen": CoordinateSupport.pointJSON(actionPoint.screen),
+            "inputUnits": NSNull(),
+        ]
         if let postCropPath {
+            var debugPayload = payload
             let cropBounds = coordinateContext.cropBounds()
             if let bounds = cropBounds,
                let crop = ScreenshotSupport.cropRect(centeredAt: actionPoint.screen, within: bounds),
@@ -426,22 +448,15 @@ enum CLI {
                     at: URL(fileURLWithPath: postCropPath),
                     markerPoint: cropPoint
                 )
-                payload["postCropPath"] = cropPayload["path"]
-                payload["postCropBounds"] = coordinateContext.outputRectJSON(fromScreenRect: crop)
-                payload["postCropOrigin"] = coordinateContext.outputPointJSON(fromScreenPoint: crop.origin)
-                payload["postCropClickPoint"] = CoordinateSupport.pointJSON(cropPoint)
+                debugPayload["postCropPath"] = cropPayload["path"]
+                debugPayload["postCropBounds"] = coordinateContext.outputRectJSON(fromScreenRect: crop)
+                debugPayload["postCropOrigin"] = coordinateContext.outputPointJSON(fromScreenPoint: crop.origin)
+                debugPayload["postCropClickPoint"] = CoordinateSupport.pointJSON(cropPoint)
             }
+            try output.emit(debugPayload, human: "clicked \(button.rawValue) at \(x),\(y)")
+            return
         }
-        var human = "clicked \(button.rawValue) at \(x),\(y) [\(relative ? "relative, " : "")\(coordinateContext.summary), screen \(Int(actionPoint.screen.x.rounded())),\(Int(actionPoint.screen.y.rounded()))] [\(profile.rawValue)]"
-        if let feedback = payload["feedback"] as? String {
-            human += " | \(feedback)"
-        } else if let feedbackLines = payload["feedback"] as? [String], !feedbackLines.isEmpty {
-            human += " | " + feedbackLines.joined(separator: " -> ")
-        }
-        try output.emit(
-            payload,
-            human: human
-        )
+        try output.emit(payload, human: "clicked \(button.rawValue) at \(x),\(y)")
     }
 
     static func scroll(args: [String], output: CLIOutput) throws {
@@ -476,7 +491,14 @@ enum CLI {
             throw CUAError(message: "usage: macos-cua type [--fast] <text>")
         }
         try InputSupport.typeText(rest[0], fast: fast)
-        try output.emit(["length": rest[0].count, "fast": fast], human: "typed \(rest[0].count) characters")
+        try output.emit(
+            [
+                "accepted": true,
+                "pointerScreen": NSNull(),
+                "inputUnits": rest[0].utf16.count,
+            ],
+            human: "typed \(rest[0].count) characters"
+        )
     }
 
     static func wait(args: [String], output: CLIOutput) throws {
@@ -639,7 +661,9 @@ enum CLI {
         return (rest, selected, explicitScreen, postCropPath)
     }
 
-    static func parseScreenshotOptions(_ args: [String]) throws -> (remaining: [String], explicitScreen: Bool, region: CGRect?) {
+    static func parseScreenshotOptions(_ args: [String]) throws
+        -> (remaining: [String], explicitScreen: Bool, region: CGRect?)
+    {
         var remaining: [String] = []
         var explicitScreen = false
         var region: CGRect?
@@ -649,26 +673,25 @@ enum CLI {
             switch args[index] {
             case "--screen":
                 guard !explicitScreen else {
-                    throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
+                    throw CUAError(message: "duplicate --screen option")
                 }
                 explicitScreen = true
                 index += 1
             case "--region":
                 guard region == nil, index + 4 < args.count else {
-                    throw CUAError(message: "usage: macos-cua screenshot [--screen] [--region x y w h] <path.png>")
+                    throw CUAError(message: "invalid --region option")
                 }
                 let x = try parseInt(args[index + 1], name: "x")
                 let y = try parseInt(args[index + 2], name: "y")
-                let w = try parseInt(args[index + 3], name: "width")
-                let h = try parseInt(args[index + 4], name: "height")
-                region = CGRect(x: x, y: y, width: w, height: h)
+                let width = try parseInt(args[index + 3], name: "width")
+                let height = try parseInt(args[index + 4], name: "height")
+                region = CGRect(x: x, y: y, width: width, height: height)
                 index += 5
             default:
                 remaining.append(args[index])
                 index += 1
             }
         }
-
         return (remaining, explicitScreen, region)
     }
 
