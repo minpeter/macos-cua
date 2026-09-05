@@ -9,6 +9,7 @@ Affected commands:
 - `state`
 - `screenshot`
 - `move`
+- `mousedown`
 - `click`
 
 This mode is most useful when a screenshot was resized between capture and inference, so `image space` is no longer 1:1 with `action space`.
@@ -26,9 +27,10 @@ Switch to `--relative` only when:
 ## Contract
 
 - `0` means the top or left edge of the active coordinate space
-- `1000` means the bottom or right edge
+- for pointer actions, `1000` means the last usable point (`size - 1`)
+- for region origin and size, `1000` spans the full extent
 - there are no alternate relative-coordinate flags or alternate ranges
-- do not mix pixel coordinates with `--relative`
+- do not mix absolute logical-point coordinates with `--relative`
 
 ## Example
 

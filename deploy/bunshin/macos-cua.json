@@ -96,7 +96,7 @@
         "output": "json"
       },
       "cua.type": {
-        "args": ["type", "{text}"],
+        "args": ["type", "--", "{text}"],
         "output": "json"
       }
     }

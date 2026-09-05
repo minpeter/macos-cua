@@ -26,6 +26,8 @@ private struct CoordinateResolution {
     let coordinateSpace: CoordinateSpaceName
     let coordinateFallback: Bool
     let window: WindowRecord?
+    let primaryBounds: CGRect?
+    let displayBounds: [CGRect]
 
     var windowBounds: CGRect? {
         window?.bounds
@@ -56,13 +58,13 @@ private struct CoordinateResolution {
     func screenshotBounds(for target: ScreenshotTarget) -> CGRect? {
         switch target {
         case .frontmostWindow:
-            guard let bounds = windowBounds else { return nil }
+            guard let bounds = windowBounds else { return primaryBounds }
             if coordinateSpace == .window {
                 return CGRect(origin: .zero, size: bounds.size)
             }
             return bounds
         case .screen:
-            return ScreenshotSupport.screenBounds()
+            return primaryBounds
         case .region(let rect):
             return rect
         }
@@ -79,6 +81,9 @@ struct CoordinateContext {
     var isRelative: Bool { valueMode == .relative }
     var usesWindowCoordinates: Bool { coordinateSpace == .window }
     var windowBounds: CGRect? { resolution.windowBounds }
+    var frontmostWindow: WindowRecord? { resolution.window }
+    var primaryBounds: CGRect? { resolution.primaryBounds }
+    var displayBounds: [CGRect] { resolution.displayBounds }
     var summary: String {
         coordinateFallback ? "\(coordinateSpaceName) fallback" : coordinateSpaceName
     }
@@ -94,11 +99,20 @@ struct CoordinateContext {
     }
 
     func inputRect(_ rect: CGRect) throws -> ResolvedActionRect {
+        try CoordinateSupport.validateRectGeometry(rect)
         if isRelative {
             try CoordinateSupport.validateRelativeRect(rect)
         }
         let local = isRelative ? CoordinateSupport.denormalize(rect, resolution: resolution) : rect
-        return ResolvedActionRect(local: local, screen: resolution.translate(rect: local))
+        let extent = CGRect(origin: .zero, size: CoordinateSupport.referenceSize(for: resolution))
+        guard extent.contains(local) else {
+            throw CUAError(message: "region is outside the \(coordinateSpaceName)")
+        }
+        let screen = resolution.translate(rect: local)
+        guard displayBounds.contains(where: { $0.intersects(screen) }) else {
+            throw CUAError(message: "region does not intersect an active display")
+        }
+        return ResolvedActionRect(local: local, screen: screen)
     }
 
     func outputPoint(fromScreenPoint point: CGPoint) -> CGPoint {
@@ -145,12 +159,13 @@ struct CoordinateContext {
     }
 
     func cropBounds() -> CGRect? {
-        coordinateSpace == .window ? windowBounds : ScreenshotSupport.screenBounds()
+        coordinateSpace == .window ? windowBounds : primaryBounds
     }
 
     func applyMetadata(to payload: inout [String: Any]) {
         payload["coordinateSpace"] = coordinateSpaceName
         payload["coordinateFallback"] = coordinateFallback
+        payload["coordinateUnits"] = "logical-points"
         if isRelative {
             payload["relative"] = true
         }
@@ -194,16 +209,6 @@ struct CoordinateContext {
 }
 
 enum CoordinateSupport {
-    fileprivate static func resolve(explicitScreen: Bool, frontmostWindow: WindowRecord? = WindowSupport.frontmostWindow()) -> CoordinateResolution {
-        if explicitScreen {
-            return CoordinateResolution(coordinateSpace: .screen, coordinateFallback: false, window: frontmostWindow)
-        }
-        if let frontmostWindow {
-            return CoordinateResolution(coordinateSpace: .window, coordinateFallback: false, window: frontmostWindow)
-        }
-        return CoordinateResolution(coordinateSpace: .screen, coordinateFallback: true, window: nil)
-    }
-
     // Reference dimensions for relative coordinate scaling (1000 == full width or height).
     fileprivate static func referenceSize(for resolution: CoordinateResolution) -> CGSize {
         switch resolution.coordinateSpace {
@@ -213,17 +218,28 @@ enum CoordinateSupport {
             }
             fallthrough
         case .screen:
-            return NSScreen.main?.frame.size ?? .zero
+            return resolution.primaryBounds?.size ?? .zero
         }
     }
 
     static func context(
         explicitScreen: Bool,
         relative: Bool,
-        frontmostWindow: WindowRecord? = WindowSupport.frontmostWindow()
+        frontmostWindow: WindowRecord? = WindowSupport.frontmostWindow(),
+        primaryBounds: CGRect? = ScreenshotSupport.screenBounds(),
+        displayBounds: [CGRect] = ScreenshotSupport.displayBounds()
     ) -> CoordinateContext {
-        CoordinateContext(
-            resolution: resolve(explicitScreen: explicitScreen, frontmostWindow: frontmostWindow),
+        // Resolve geometry once; focus/display changes must not alter an invocation halfway through.
+        let usableWindow = frontmostWindow.flatMap { window -> WindowRecord? in
+            let bounds = window.bounds
+            return window.onScreen && isValidRectGeometry(bounds) ? window : nil
+        }
+        return CoordinateContext(
+            resolution: CoordinateResolution(
+                coordinateSpace: explicitScreen || usableWindow == nil ? .screen : .window,
+                coordinateFallback: !explicitScreen && usableWindow == nil,
+                window: usableWindow, primaryBounds: primaryBounds, displayBounds: displayBounds
+            ),
             valueMode: relative ? .relative : .absolute
         )
     }
@@ -294,13 +310,30 @@ enum CoordinateSupport {
     fileprivate static func validatePoint(_ point: CGPoint, resolution: CoordinateResolution) throws {
         let size = referenceSize(for: resolution)
         guard point.x >= 0, point.y >= 0, point.x < size.width, point.y < size.height else {
-            throw CUAError(
-                message: "coordinate is outside the \(resolution.coordinateSpace.rawValue): x=\(Int(point.x)), y=\(Int(point.y))"
-            )
+            throw CUAError(message: "coordinate is outside the \(resolution.coordinateSpace.rawValue): x=\(point.x), y=\(point.y)")
+        }
+        let screen = resolution.translate(point: point)
+        guard resolution.displayBounds.contains(where: { bounds in
+            screen.x >= bounds.minX && screen.y >= bounds.minY && screen.x < bounds.maxX && screen.y < bounds.maxY
+        }) else {
+            throw CUAError(message: "coordinate is not on an active display: x=\(screen.x), y=\(screen.y)")
+        }
+    }
+
+    static func isValidRectGeometry(_ rect: CGRect) -> Bool {
+        let values = [rect.origin.x, rect.origin.y, rect.size.width, rect.size.height, rect.maxX, rect.maxY]
+        return values.allSatisfy { $0.isFinite && abs($0) <= CGFloat(Int32.max) }
+            && rect.size.width > 0 && rect.size.height > 0
+    }
+
+    static func validateRectGeometry(_ rect: CGRect) throws {
+        guard isValidRectGeometry(rect) else {
+            throw CUAError(message: "region requires finite coordinates and positive width/height within signed 32-bit range")
         }
     }
 
     static func validateRelativeRect(_ rect: CGRect) throws {
+        try validateRectGeometry(rect)
         let x = Int(rect.origin.x.rounded())
         let y = Int(rect.origin.y.rounded())
         let width = Int(rect.width.rounded())

@@ -1,9 +1,8 @@
 import Foundation
 
+let arguments = Array(CommandLine.arguments.dropFirst())
 do {
-    try CLI.run(arguments: Array(CommandLine.arguments.dropFirst()))
-} catch let error as CUAError {
-    fail(error.message)
+    try CLI.run(arguments: arguments)
 } catch {
-    fail(error.localizedDescription)
+    reportFailure(error, json: CLI.requestsJSON(arguments))
 }

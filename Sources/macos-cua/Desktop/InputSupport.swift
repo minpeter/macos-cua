@@ -87,22 +87,25 @@ enum InputSupport {
         event.post(tap: .cghidEventTap)
     }
 
-    static func currentPointer() -> CGPoint {
-        let point = NSEvent.mouseLocation
-        guard let screen = NSScreen.main else {
-            return point
+    static func currentPointer(event: CGEvent? = CGEvent(source: nil)) -> CGPoint {
+        if let event {
+            return event.location
         }
-        // Normalize to the same top-left screen space used by screenshots and CGEvent mouse positions.
-        return CGPoint(x: point.x, y: screen.frame.height - point.y)
+        // Cocoa uses a bottom-left origin on the primary display, not the active display.
+        let point = NSEvent.mouseLocation
+        return CGPoint(x: point.x, y: CGDisplayBounds(CGMainDisplayID()).height - point.y)
     }
 
     static func actionSpace() throws -> [String: Any] {
-        let screen = try requireValue(NSScreen.main, "no main screen is available")
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        guard !bounds.isEmpty else {
+            throw CUAError(message: "no primary screen is available")
+        }
         return [
-            "x": 0,
-            "y": 0,
-            "width": Int(screen.frame.width.rounded()),
-            "height": Int(screen.frame.height.rounded()),
+            "x": Int(bounds.minX.rounded()),
+            "y": Int(bounds.minY.rounded()),
+            "width": Int(bounds.width.rounded()),
+            "height": Int(bounds.height.rounded()),
         ]
     }
 
@@ -130,39 +133,59 @@ enum InputSupport {
         return plan
     }
 
-    static func click(point: CGPoint, button: MouseButtonName, count: Int, profile: PointerMotionProfile, seed: UInt64? = nil) throws {
-        let plan = try performMotion(to: point, profile: profile, kind: count == 2 ? .doubleClick : .click, seed: seed)
+    static func click(
+        point: CGPoint, button: MouseButtonName, count: Int, profile: PointerMotionProfile, seed: UInt64? = nil,
+        move: (CGPoint, PointerMotionProfile, PointerMotionKind, UInt64?) throws -> PointerMotionPlan = {
+            try performMotion(to: $0, profile: $1, kind: $2, seed: $3)
+        },
+        pointer: () -> CGPoint = { currentPointer() },
+        postEvent: (CGEvent?) throws -> Void = post
+    ) throws {
+        let plan = try move(point, profile, count == 2 ? .doubleClick : .click, seed)
         for clickIndex in 1...count {
-            try mouseDown(at: point, button: button, clickState: Int64(clickIndex))
-            try mouseUp(at: point, button: button, clickState: Int64(clickIndex))
+            try mouseDown(at: point, button: button, clickState: Int64(clickIndex), pointer: pointer, postEvent: postEvent)
+            try mouseUp(at: point, button: button, clickState: Int64(clickIndex), postEvent: postEvent)
             if clickIndex < count {
                 usleep(plan.interClickDelayMicros ?? 75_000)
             }
         }
     }
 
-    static func mouseDown(at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1) throws {
+    static func mouseDown(
+        at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1,
+        pointer: () -> CGPoint = { currentPointer() }, postEvent: (CGEvent?) throws -> Void = post
+    ) throws {
+        let observed = pointer()
+        // Fractional logical points may be quantized by WindowServer, but a different
+        // logical pixel (including a clamped monitor edge) must never receive the click.
+        guard observed.x.isFinite, observed.y.isFinite,
+              abs(observed.x - point.x) < 0.5, abs(observed.y - point.y) < 0.5 else {
+            throw CUAError(message: "pointer did not reach the requested position; mouse-down was not sent (requested \(point.x),\(point.y), observed \(observed.x),\(observed.y))")
+        }
         let down = CGEvent(mouseEventSource: nil, mouseType: button.downType, mouseCursorPosition: point, mouseButton: button.cgButton)
         down?.setIntegerValueField(.mouseEventClickState, value: clickState)
-        try post(down)
+        try postEvent(down)
     }
 
-    static func mouseUp(at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1) throws {
+    static func mouseUp(at point: CGPoint, button: MouseButtonName, clickState: Int64 = 1, postEvent: (CGEvent?) throws -> Void = post) throws {
         let up = CGEvent(mouseEventSource: nil, mouseType: button.upType, mouseCursorPosition: point, mouseButton: button.cgButton)
         up?.setIntegerValueField(.mouseEventClickState, value: clickState)
-        try post(up)
+        try postEvent(up)
     }
 
-    static func scroll(dx: Int, dy: Int) throws {
+    static func scroll(dx: Int, dy: Int, postEvent: (CGEvent?) throws -> Void = post) throws {
+        guard let deltaX = Int32(exactly: dx), let deltaY = Int32(exactly: dy) else {
+            throw CUAError(message: "scroll deltas must be signed 32-bit integers")
+        }
         let event = CGEvent(
             scrollWheelEvent2Source: nil,
             units: .pixel,
             wheelCount: 2,
-            wheel1: Int32(dy),
-            wheel2: Int32(dx),
+            wheel1: deltaY,
+            wheel2: deltaX,
             wheel3: 0
         )
-        try post(event)
+        try postEvent(event)
     }
 
     static func currentModifierNames() -> [String] {
@@ -212,8 +235,17 @@ enum InputSupport {
         return (flags, remainder)
     }
 
-    static func keypress(_ combo: String) throws {
+    static func keypress(_ combo: String, postEvent: (CGEvent?) throws -> Void = post) throws {
+        let parts = combo.split(separator: "+", omittingEmptySubsequences: false)
+        guard !parts.contains(where: \.isEmpty) else {
+            throw CUAError(message: "keypress requires nonempty key tokens separated by +")
+        }
         let (flags, remainder) = modifierFlagsAndRemainder(combo)
+        guard remainder.count <= 1 else {
+            throw CUAError(message: "keypress accepts at most one nonmodifier key")
+        }
+        // Resolve the entire combination before posting even the first modifier.
+        let mainCode = try remainder.first.map { try keycode(for: $0) }
         let modifierOrder: [(String, CGEventFlags)] = [
             ("command", .maskCommand),
             ("shift", .maskShift),
@@ -222,15 +254,15 @@ enum InputSupport {
             ("function", .maskSecondaryFn),
         ]
 
-        if remainder.isEmpty {
+        guard let code = mainCode else {
             for (name, flag) in modifierOrder where flags.contains(flag) {
                 let code = try keycode(for: name)
                 let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
                 down?.flags = flag
-                try post(down)
+                try postEvent(down)
                 let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
                 up?.flags = []
-                try post(up)
+                try postEvent(up)
             }
             return
         }
@@ -241,77 +273,60 @@ enum InputSupport {
             activeFlags.insert(flag)
             let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
             down?.flags = activeFlags
-            try post(down)
+            try postEvent(down)
         }
 
-        let code = try keycode(for: remainder[0])
         let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true)
         down?.flags = flags
-        try post(down)
+        try postEvent(down)
         let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
         up?.flags = flags
-        try post(up)
+        try postEvent(up)
 
         for (name, flag) in modifierOrder.reversed() where flags.contains(flag) {
             let code = try keycode(for: name)
             activeFlags.remove(flag)
             let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false)
             up?.flags = activeFlags
-            try post(up)
+            try postEvent(up)
         }
     }
 
-    static func typeText(_ text: String, fast: Bool) throws {
+    static func typeText(
+        _ text: String, fast: Bool,
+        pause: (UInt32) -> Void = { usleep($0) },
+        postEvent: (CGEvent?) throws -> Void = post
+    ) throws {
         guard text.utf16.count <= 8_192 else {
             throw CUAError(message: "typed text must contain at most 8192 UTF-16 units")
         }
-        if text.isEmpty {
-            return
-        }
-        if requiresClipboardPaste(text) {
-            let previous = try ClipboardSupport.getText()
-            defer { try? ClipboardSupport.setText(previous) }
-            try ClipboardSupport.setText(text)
-            try keypress("cmd+v")
-            usleep(100_000)
-            return
-        }
-
-        func delayMicros(for character: Character) -> UInt32 {
-            if fast {
-                if character == " " || character == "\n" || character == "\t" {
-                    return UInt32(Int.random(in: 20_000...45_000))
-                }
-                return UInt32(Int.random(in: 8_000...24_000))
+        let units = Array(text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n").utf16)
+        // CG keyboard Unicode payloads hold at most 20 UTF-16 units. Batch ASCII and
+        // Unicode identically: no pasteboard ownership, format loss or restoration race.
+        let batchSize = fast ? 20 : 8
+        var start = 0
+        while start < units.count {
+            var end = min(start + batchSize, units.count)
+            if end < units.count && (0xD800...0xDBFF).contains(units[end - 1]) {
+                end -= 1
             }
-            if character == " " || character == "\n" || character == "\t" {
-                return UInt32(Int.random(in: 90_000...180_000))
+            let batch = Array(units[start..<end])
+            let down = try requireValue(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true), "failed to create text key-down")
+            let up = try requireValue(CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false), "failed to create text key-up")
+            for event in [down, up] {
+                event.flags = []
+                event.keyboardSetUnicodeString(stringLength: batch.count, unicodeString: batch)
+                try postEvent(event)
             }
-            if ",.!?;:".contains(character) {
-                return UInt32(Int.random(in: 80_000...160_000))
-            }
-            return UInt32(Int.random(in: 35_000...110_000))
-        }
-
-        usleep(fast ? 15_000 : UInt32(Int.random(in: 40_000...120_000)))
-        for character in text {
-            if character == "\n" {
-                try keypress("enter")
-                usleep(delayMicros(for: character))
-                continue
-            }
-            let unit = String(character)
-            let utf16 = Array(unit.utf16)
-            let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
-            down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-            try post(down)
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-            up?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-            try post(up)
-            usleep(delayMicros(for: character))
+            // A fixed per-batch budget keeps both modes comfortably below the 20s
+            // sidecar timeout, unlike random per-character delays (up to 15 minutes).
+            pause(fast ? 1_000 : 2_000)
+            start = end
         }
     }
 
+    // Historical classifier retained for callers; text delivery no longer uses paste.
     static func requiresClipboardPaste(_ text: String) -> Bool {
         !text.unicodeScalars.allSatisfy(\.isASCII)
     }
