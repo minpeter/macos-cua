@@ -45,6 +45,20 @@ final class PointerMotionEngineTests: XCTestCase {
         XCTAssertEqual(lastPoint.y, target.y, accuracy: 0.0001)
     }
 
+    func testCompressionPreservesExactShortMoveEndpoints() {
+        for profile in [PointerMotionProfile.fast, .precise] {
+            for distance in [0.25, 1.0, 20.0, 40.0, 80.0] {
+                for seed in UInt64(1)...16 {
+                    let target = CGPoint(x: 200 + distance, y: 240)
+                    let plan = PointerMotionEngine.buildPlan(PointerMotionRequest(
+                        start: CGPoint(x: 200, y: 240), end: target,
+                        profile: profile, kind: .move, seed: seed))
+                    XCTAssertEqual(plan.samples.last?.point, target, "profile=\(profile) distance=\(distance) seed=\(seed)")
+                }
+            }
+        }
+    }
+
     func testIntervalsAreNotUniform() {
         let plan = PointerMotionEngine.buildPlan(
             PointerMotionRequest(
