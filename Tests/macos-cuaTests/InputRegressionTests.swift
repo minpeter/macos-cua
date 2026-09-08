@@ -31,6 +31,32 @@ final class InputRegressionTests: XCTestCase {
         XCTAssertEqual(decoded, "a\nb")
     }
 
+    func testNewlineNeverSharesAUnicodeEventWithItsSuffix() throws {
+        for fast in [false, true] {
+            for text in ["line one\nline two", "line one\r\nline two", "\nABCDEFG", "A\nB", "\rleading", "\n\nend"] {
+                var decoded = ""
+                try InputSupport.typeText(text, fast: fast, pause: { _ in }, postEvent: { event in
+                    let event = try XCTUnwrap(event)
+                    guard event.type == .keyDown else { return }
+                    let characters = try XCTUnwrap(NSEvent(cgEvent: event)?.characters)
+                    if characters.contains("\n") {
+                        XCTAssertEqual(characters, "\n", "AppKit command characters must not consume adjacent text")
+                    }
+                    decoded += characters
+                })
+                XCTAssertEqual(decoded, text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n"))
+            }
+        }
+    }
+
+    func testMaximumAstralTextUsesFullUnicodePayloadCapacity() throws {
+        var downCount = 0
+        try InputSupport.typeText(String(repeating: "😀", count: 4096), fast: false, pause: { _ in }, postEvent: { event in
+            if try XCTUnwrap(event).type == .keyDown { downCount += 1 }
+        })
+        XCTAssertEqual(downCount, 410)
+    }
+
     func testASCIIUsesBoundedBatches() throws {
         var events: [CGEvent] = []
         try InputSupport.typeText(String(repeating: "a", count: 41), fast: true, pause: { _ in }, postEvent: { event in

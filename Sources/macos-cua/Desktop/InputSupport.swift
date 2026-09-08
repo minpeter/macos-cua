@@ -304,10 +304,19 @@ enum InputSupport {
             .replacingOccurrences(of: "\r", with: "\n").utf16)
         // CG keyboard Unicode payloads hold at most 20 UTF-16 units. Batch ASCII and
         // Unicode identically: no pasteboard ownership, format loss or restoration race.
-        let batchSize = fast ? 20 : 8
+        // Fill each payload in both modes to avoid excessive target-side layout
+        // work for long Unicode input. Fast mode changes pacing, not capacity.
+        let batchSize = 20
         var start = 0
         while start < units.count {
             var end = min(start + batchSize, units.count)
+            // AppKit treats a leading newline as an editing command and discards
+            // the rest of that event. Send it separately from ordinary text.
+            if units[start] == 0x0A {
+                end = start + 1
+            } else if let newline = units[start..<end].firstIndex(of: 0x0A) {
+                end = newline
+            }
             if end < units.count && (0xD800...0xDBFF).contains(units[end - 1]) {
                 end -= 1
             }

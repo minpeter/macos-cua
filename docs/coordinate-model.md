@@ -25,6 +25,11 @@ Pointer bounds are half-open: `0 <= x < width`, `0 <= y < height`.
 The translated point must belong to an actual display; an empty gap between
 monitors is not a valid pointer destination.
 
+Motion always posts the requested logical-point endpoint, including after
+path compression. Fractional coordinates may still be quantized by WindowServer;
+integer JSON pointer fields are rounded observations, not proof of exact native
+floating-point equality.
+
 ## Diagnostics
 
 These remain screen-global diagnostics:

@@ -263,8 +263,10 @@ enum PointerMotionEngine {
         guard !samples.isEmpty else { return [] }
         var result: [PointerMotionSample] = []
         var previous: CGPoint?
-        for sample in samples {
-            if let previous, hypot(previous.x - sample.point.x, previous.y - sample.point.y) < 0.2 {
+        for (index, sample) in samples.enumerated() {
+            // The final sample is the requested endpoint, not disposable jitter.
+            if index != samples.count - 1,
+               let previous, hypot(previous.x - sample.point.x, previous.y - sample.point.y) < 0.2 {
                 if !result.isEmpty {
                     let mergedDelay = min(UInt32.max, result[result.count - 1].delayMicros &+ sample.delayMicros)
                     result[result.count - 1] = PointerMotionSample(point: result[result.count - 1].point, delayMicros: mergedDelay)

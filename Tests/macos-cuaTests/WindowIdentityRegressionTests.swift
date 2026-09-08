@@ -128,6 +128,19 @@ final class WindowIdentityRegressionTests: XCTestCase {
         XCTAssertTrue(cleanedUp)
     }
 
+    func testUnhideConfirmationRequiresTargetNotificationInsteadOfCachedState() {
+        let app = NSRunningApplication.current
+        let observation = AppSupport.ActivationConfirmation(verify: { true })
+        observation.requiredNotificationPID = app.processIdentifier
+        observation.check()
+        XCTAssertFalse(observation.confirmed)
+        observation.notified(Notification(name: NSWorkspace.didUnhideApplicationNotification))
+        XCTAssertFalse(observation.confirmed)
+        observation.notified(Notification(name: NSWorkspace.didUnhideApplicationNotification,
+            userInfo: [NSWorkspace.applicationUserInfoKey: app]))
+        XCTAssertTrue(observation.confirmed)
+    }
+
     func testConfirmationCleansUpWhenActionFails() {
         var cleanedUp = false
         XCTAssertThrowsError(try AppSupport.confirmActivation(subscribe: { _ in
