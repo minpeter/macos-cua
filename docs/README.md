@@ -8,6 +8,7 @@ Start here when the default absolute-coordinate workflow is not enough.
 
 - [Relative mode and resized images](relative-mode.md)
 - [Coordinate model](coordinate-model.md)
+- [Input delivery and native dispatch](input-delivery.md)
 - [Model resolution guide](model-resolution.md)
 - [JSON output and automation](json-output.md)
 - [Runtime selection guide](runtime-selection.md)
