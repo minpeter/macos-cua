@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 enum AppSupport {
@@ -70,7 +71,7 @@ enum AppSupport {
             pid: app.processIdentifier,
             name: app.localizedName ?? "Unknown",
             bundleID: app.bundleIdentifier,
-            isActive: app.isActive,
+            isActive: frontmostApplication()?.processIdentifier == app.processIdentifier,
             isHidden: app.isHidden,
             isTerminated: app.isTerminated
         )
@@ -131,16 +132,23 @@ enum AppSupport {
         let verify: () -> Bool
         let runLoop = CFRunLoopGetCurrent()
         private(set) var confirmed = false
+        var requiredNotificationPID: pid_t?
+        private var receivedRequiredNotification = false
 
         init(verify: @escaping () -> Bool) {
             self.verify = verify
         }
 
         @objc func notified(_ notification: Notification) {
+            if let requiredNotificationPID {
+                guard (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier == requiredNotificationPID else { return }
+                receivedRequiredNotification = true
+            }
             check()
         }
 
         func check() {
+            guard requiredNotificationPID == nil || receivedRequiredNotification else { return }
             if verify() {
                 confirmed = true
                 CFRunLoopStop(runLoop)
@@ -173,6 +181,30 @@ enum AppSupport {
         return observation.wait(timeout: timeout)
     }
 
+    static func requestActivation(_ app: NSRunningApplication) {
+        if app.isHidden {
+            // Unhiding is asynchronous; a foreground request made before it
+            // completes can be accepted by AX without actually activating.
+            let unhidden = confirmActivation(subscribe: { observation in
+                observation.requiredNotificationPID = app.processIdentifier
+                let center = NSWorkspace.shared.notificationCenter
+                center.addObserver(observation, selector: #selector(ActivationConfirmation.notified(_:)),
+                                   name: NSWorkspace.didUnhideApplicationNotification, object: nil)
+                return { center.removeObserver(observation) }
+            }, action: { _ = app.unhide() }, verify: { true })
+            guard unhidden else { return }
+        }
+        // Modern AppKit activation is cooperative. An accessibility controller
+        // requests foreground directly; callers still confirm the actual identity.
+        if PermissionSupport.isGranted(.accessibility) {
+            let element = AXUIElementCreateApplication(app.processIdentifier)
+            if AXUIElementSetAttributeValue(element, kAXFrontmostAttribute as CFString, kCFBooleanTrue) == .success {
+                return
+            }
+        }
+        _ = app.activate()
+    }
+
     static func activateApplication(_ app: NSRunningApplication) -> Bool {
         confirmActivation(subscribe: { observation in
             let center = NSWorkspace.shared.notificationCenter
@@ -180,8 +212,7 @@ enum AppSupport {
                                name: NSWorkspace.didActivateApplicationNotification, object: nil)
             return { center.removeObserver(observation) }
         }, action: {
-            app.unhide()
-            _ = app.activate()
+            requestActivation(app)
         }, verify: {
             !app.isTerminated && frontmostApplication()?.processIdentifier == app.processIdentifier
         })

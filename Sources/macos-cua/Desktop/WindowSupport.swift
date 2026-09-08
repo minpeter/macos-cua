@@ -556,8 +556,7 @@ enum WindowSupport {
             guard nativeWindowID(window) == id else {
                 throw CUAError(message: "window identity changed before activation: \(id)")
             }
-            app.unhide()
-            _ = app.activate()
+            AppSupport.requestActivation(app)
             if axBool(window, kAXMinimizedAttribute) == true {
                 let result = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
                 guard result == .success else {
