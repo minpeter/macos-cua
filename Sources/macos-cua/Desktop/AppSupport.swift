@@ -198,11 +198,11 @@ enum AppSupport {
         // requests foreground directly; callers still confirm the actual identity.
         if PermissionSupport.isGranted(.accessibility) {
             let element = AXUIElementCreateApplication(app.processIdentifier)
-            if AXUIElementSetAttributeValue(element, kAXFrontmostAttribute as CFString, kCFBooleanTrue) == .success {
-                return
-            }
+            _ = AXUIElementSetAttributeValue(element, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
         }
-        _ = app.activate()
+        // AX frontmost is only a request. Always issue AppKit activation too;
+        // hidden apps can accept the AX request without becoming frontmost.
+        _ = app.activate(options: .activateIgnoringOtherApps)
     }
 
     static func activateApplication(_ app: NSRunningApplication) -> Bool {
